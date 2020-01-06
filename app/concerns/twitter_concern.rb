@@ -2,7 +2,12 @@ module TwitterConcern
   extend ActiveSupport::Concern
 
   included do
+    include Oauthable
+
     validate :validate_twitter_options
+    valid_oauth_providers :twitter
+
+    gem_dependency_check { defined?(Twitter) && Devise.omniauth_providers.include?(:twitter) && ENV['TWITTER_OAUTH_KEY'].present? && ENV['TWITTER_OAUTH_SECRET'].present? }
   end
 
   def validate_twitter_options
@@ -15,27 +20,57 @@ module TwitterConcern
   end
 
   def twitter_consumer_key
-    options['consumer_key'].presence || credential('twitter_consumer_key')
+    (config = Devise.omniauth_configs[:twitter]) && config.strategy.consumer_key
   end
 
   def twitter_consumer_secret
-    options['consumer_secret'].presence || credential('twitter_consumer_secret')
+    (config = Devise.omniauth_configs[:twitter]) && config.strategy.consumer_secret
   end
 
   def twitter_oauth_token
-    options['oauth_token'].presence || options['access_key'].presence || credential('twitter_oauth_token')
+    service && service.token
   end
 
   def twitter_oauth_token_secret
-    options['oauth_token_secret'].presence || options['access_secret'].presence || credential('twitter_oauth_token_secret')
+    service && service.secret
   end
 
   def twitter
-    Twitter::REST::Client.new do |config|
+    @twitter ||= Twitter::REST::Client.new do |config|
       config.consumer_key = twitter_consumer_key
       config.consumer_secret = twitter_consumer_secret
       config.access_token = twitter_oauth_token
       config.access_token_secret = twitter_oauth_token_secret
+    end
+  end
+
+  module ClassMethods
+    def twitter_dependencies_missing
+      if ENV['TWITTER_OAUTH_KEY'].blank? || ENV['TWITTER_OAUTH_SECRET'].blank?
+        "## Set TWITTER_OAUTH_KEY and TWITTER_OAUTH_SECRET in your environment to use Twitter Agents."
+      elsif !defined?(Twitter) || !Devise.omniauth_providers.include?(:twitter)
+        "## Include the `twitter`, `omniauth-twitter`, and `cantino-twitter-stream` gems in your Gemfile to use Twitter Agents."
+      end
+    end
+  end
+end
+
+class Twitter::Error
+  remove_const :FORBIDDEN_MESSAGES
+
+  FORBIDDEN_MESSAGES = proc do |message|
+    case message
+    when /(?=.*status).*duplicate/i
+      # - "Status is a duplicate."
+      Twitter::Error::DuplicateStatus
+    when /already favorited/i
+      # - "You have already favorited this status."
+      Twitter::Error::AlreadyFavorited
+    when /already retweeted|Share validations failed/i
+      # - "You have already retweeted this Tweet." (Nov 2017-)
+      # - "You have already retweeted this tweet." (?-Nov 2017)
+      # - "sharing is not permissible for this status (Share validations failed)" (-? 2017)
+      Twitter::Error::AlreadyRetweeted
     end
   end
 end

@@ -1,5 +1,5 @@
-# encoding: utf-8 
-require 'spec_helper'
+# encoding: utf-8
+require 'rails_helper'
 
 describe Agents::WeiboPublishAgent do
   before do
@@ -9,7 +9,8 @@ describe Agents::WeiboPublishAgent do
       :app_key => "---",
       :app_secret => "---",
       :access_token => "---",
-      :message_path => "text"
+      :message_path => "text",
+      :pic_path => "pic"
     }
 
     @checker = Agents::WeiboPublishAgent.new(:name => "Weibo Publisher", :options => @opts)
@@ -22,7 +23,10 @@ describe Agents::WeiboPublishAgent do
     @event.save!
 
     @sent_messages = []
+    @sent_pictures = []
     stub.any_instance_of(Agents::WeiboPublishAgent).publish_tweet { |message| @sent_messages << message}
+    stub.any_instance_of(Agents::WeiboPublishAgent).publish_tweet_with_pic { |message, picture| @sent_pictures << picture}
+    stub.any_instance_of(Agents::WeiboPublishAgent).sleep
   end
 
   describe '#receive' do
@@ -38,8 +42,8 @@ describe Agents::WeiboPublishAgent do
       event2.save!
 
       Agents::WeiboPublishAgent.async_receive(@checker.id, [event1.id, event2.id])
-      @sent_messages.count.should eq(2)
-      @checker.events.count.should eq(2)
+      expect(@sent_messages.count).to eq(2)
+      expect(@checker.events.count).to eq(2)
     end
   end
 
@@ -51,20 +55,52 @@ describe Agents::WeiboPublishAgent do
       event.save!
 
       Agents::WeiboPublishAgent.async_receive(@checker.id, [event.id])
-      @sent_messages.count.should eq(1)
-      @checker.events.count.should eq(1)
-      @sent_messages.first.include?("t.co").should_not be_true
+      expect(@sent_messages.count).to eq(1)
+      expect(@sent_pictures.count).to eq(0)
+      expect(@checker.events.count).to eq(1)
+      expect(@sent_messages.first.include?("t.co")).not_to be_truthy
+    end
+  end
+
+  describe '#receive payload with picture url' do
+    before do
+      stub_request(:head, 'http://valid.image').to_return(status: 200, headers: {"Content-Type" => "image/jpeg"})
+      stub_request(:head, 'http://invalid.image').to_return(status: 200, headers: {"Content-Type" => "text/html"})
+    end
+
+    it 'should publish a tweet without a picture if image url is not valid' do
+      event = Event.new
+      event.agent = agents(:bob_weather_agent)
+      event.payload = {:text => 'whatever', :pic => 'http://invalid.image'}
+      event.save!
+
+      Agents::WeiboPublishAgent.async_receive(@checker.id, [event.id])
+      expect(@sent_messages.count).to eq(1)
+      expect(@sent_pictures.count).to eq(0)
+      expect(@checker.events.count).to eq(1)
+    end
+
+    it 'should publish a tweet along with a picture if image url is valid' do
+      event = Event.new
+      event.agent = agents(:bob_weather_agent)
+      event.payload = {:text => 'whatever', :pic => 'http://valid.image'}
+      event.save!
+
+      Agents::WeiboPublishAgent.async_receive(@checker.id, [event.id])
+      expect(@sent_messages.count).to eq(0)
+      expect(@sent_pictures.count).to eq(1)
+      expect(@checker.events.count).to eq(1)
     end
   end
 
   describe '#working?' do
     it 'checks if events have been received within the expected receive period' do
-      @checker.should_not be_working # No events received
+      expect(@checker).not_to be_working # No events received
       Agents::WeiboPublishAgent.async_receive(@checker.id, [@event.id])
-      @checker.reload.should be_working # Just received events
+      expect(@checker.reload).to be_working # Just received events
       two_days_from_now = 2.days.from_now
       stub(Time).now { two_days_from_now }
-      @checker.reload.should_not be_working # More time has passed than the expected receive period without any new events
+      expect(@checker.reload).not_to be_working # More time has passed than the expected receive period without any new events
     end
   end
 end
